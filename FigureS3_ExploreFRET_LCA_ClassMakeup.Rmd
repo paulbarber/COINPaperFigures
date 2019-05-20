@@ -1,0 +1,191 @@
+---
+title: "Explore FRET Cohort LCA Classes"
+author: "P R Barber"
+date: "19 October 2018"
+output: pdf_document
+toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Introduction
+
+Are there any significant differences in the makeup of the FRET based LCA Classes?
+
+#Abbreviations 
+
+* LCA = Latent Class Analysis based on Baysian Hazards Regression.
+
+Apart from the covariates in the original xls file from David Fisher, the following columns are available:
+
+* FRET = The raw FRET efficiency score as a quantification of the proportion of HER3 in a dimer with HER2.
+* FRETxHER3 = The FRET efficiency x pixel HER3 intensity as a measure of the total HER3 in a dimer with HER2.
+* FRET.cohort = A flag to indicate this patient was in the cohort where FRET was measured from histology.
+* Class.FRET.OS and PFS = Class assignment from LCA on the FRET cohort, where OS or PFS was used as the outcome.
+* P1 and P2.FRET.OS and PFS = Class assignment probability for the 2 classes of Class.FRET.OS and PFS.
+* Class.OS and PFS = Class assignment from LCA on the full cohort, where OS or PFS was used as the outcome.
+* P1, P2 and P3.OS and PFS = Class assignment probability for the classes of Class.OS and PFS.
+* RiskScore.OS and PFS = Patient risk scores calculated from the signature based on OS and PFS outcomes.
+* BenefitScore.OS and PFS = Patient benefit scores calculated from the TRT cross terms of signature based on OS and PFS outcomes.
+
+#Conclusions
+
+* Class 2 has higher metsites.
+* Class 2 has higher NEUT score.
+* Class 2 has higher FRET score.
+* There is a difference in OS and PFS outcomes between the classes.
+
+There may be other differences with a lower significance, see below.
+
+#Load data set
+
+Load the data and separate FRET cohort.
+
+```{r, echo=TRUE}
+load(file = "COIN_Final.Rdata")
+fret_cohort <- patient_data[patient_data$FRET.cohort == 1,]
+```
+
+#PFS Classes
+
+```{r}
+class1 <- fret_cohort[fret_cohort$Class.FRET.PFS == 1,]
+class2 <- fret_cohort[fret_cohort$Class.FRET.PFS == 2,]
+
+for (d in ls(pattern="class")) print(paste(d, ":  ", dim(get(d))[1], "obs. of", dim(get(d))[2], "variables"))
+```
+
+##Boxplots
+
+Boxplots for covariates where this is possible.
+
+```{r, fig.align='center', fig.height=2.5, fig.width=3, fig.show='hold', echo=FALSE}
+par(mar=c(2.1,4.1,2.1,1.1))
+
+significant_covars <- vector()
+
+for(name in colnames(patient_data)){
+  if(all(is.na(class1[,name]) & all(is.na(class2[,name])))) next
+  tryCatch({
+    boxplot(class1[,name], class2[,name], ylab = name, xaxt="n")
+    axis(1, at = 1:2, labels = c("class1", "class2"), tick = FALSE)
+    mtext(c(paste0("n=", sum(!is.na(class1[,name]))), paste0("n=", sum(!is.na(class2[,name])))), 
+          side = 1, line = 0, at = 1:2)
+    t <- t.test(class1[,name], class2[,name])
+    mtext(paste0("p-value=", signif(t$p.value, 2)), side = 3, line = 0, 
+          col = ifelse(t$p.value<0.05, "red", "black"))
+    if(t$p.value<0.05){significant_covars <- c(significant_covars, name)}
+    }, error = function(e) print(e))
+}
+
+```
+
+##T.tests
+
+T.tests for interesting covariates (p-value<0.05).
+
+```{r, echo=FALSE}
+
+for(name in significant_covars){
+  tryCatch({
+    t <- t.test(class1[,name], class2[,name])
+    writeLines(name)
+    print(t)
+    }, error = function(e) e)
+}
+
+```
+
+##Tables
+
+Number and percentage tables for covariates where this is possible.
+
+```{r, echo=FALSE}
+
+for(name in colnames(patient_data)){
+  if (is.factor(patient_data[,name])){
+    writeLines(paste(name, "(number)"))
+    print(table(patient_data$Class.FRET.PFS, patient_data[,name]))
+    writeLines("")
+    writeLines(paste(name, "(%)"))
+    print(signif(100*table(patient_data$Class.FRET.PFS, patient_data[,name])
+          /rowSums(table(patient_data$Class.FRET.PFS, patient_data[,name])), digits = 2))
+    writeLines("")
+    writeLines("")
+  }
+}
+
+```
+
+
+#OS Classes
+
+```{r}
+class1 <- fret_cohort[fret_cohort$Class.FRET.OS == 1,]
+class2 <- fret_cohort[fret_cohort$Class.FRET.OS == 2,]
+```
+
+##Boxplots
+
+Boxplots for covariates where this is possible.
+
+```{r, fig.align='center', fig.height=2.5, fig.width=3, fig.show='hold', echo=FALSE}
+par(mar=c(2.1,4.1,2.1,1.1))
+
+significant_covars <- vector()
+
+for(name in colnames(patient_data)){
+  if(all(is.na(class1[,name]) & all(is.na(class2[,name])))) next
+  tryCatch({
+    boxplot(class1[,name], class2[,name], ylab = name, xaxt="n")
+    axis(1, at = 1:2, labels = c("class1", "class2"), tick = FALSE)
+    mtext(c(paste0("n=", sum(!is.na(class1[,name]))), paste0("n=", sum(!is.na(class2[,name])))), 
+          side = 1, line = 0, at = 1:2)
+    t <- t.test(class1[,name], class2[,name])
+    mtext(paste0("p-value=", signif(t$p.value, 2)), side = 3, line = 0, 
+          col = ifelse(t$p.value<0.05, "red", "black"))
+    if(t$p.value<0.05){significant_covars <- c(significant_covars, name)}
+    }, error = function(e) e)
+}
+
+```
+
+##T.tests
+
+T.tests for interesting covariates (p-value<0.05).
+
+```{r, echo=FALSE}
+
+for(name in significant_covars){
+  if(all(is.na(class1[,name]) & all(is.na(class2[,name])))) next
+  tryCatch({
+    t <- t.test(class1[,name], class2[,name])
+    writeLines(name)
+    print(t)
+    }, error = function(e) e)
+}
+
+```
+
+##Tables
+
+Number and percentage tables for covariates where this is possible.
+
+```{r, echo=FALSE}
+
+for(name in colnames(patient_data)){
+  if (is.factor(patient_data[,name])){
+    writeLines(paste(name, "(number)"))
+    print(table(patient_data$Class.FRET.OS, patient_data[,name]))
+    writeLines("")
+    writeLines(paste(name, "(%)"))
+    print(signif(100*table(patient_data$Class.FRET.OS, patient_data[,name])
+          /rowSums(table(patient_data$Class.FRET.OS, patient_data[,name])), digits = 2))
+    writeLines("")
+    writeLines("")
+  }
+}
+
+```
