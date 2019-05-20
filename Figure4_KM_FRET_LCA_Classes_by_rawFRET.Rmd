@@ -1,0 +1,81 @@
+---
+title: "KM FRET LCA Classes split by raw FRET"
+author: "P Barber"
+date: "09 April 2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+load(file = "COIN_Final.Rdata")
+```
+
+```{r}
+library(survival)
+
+data <- patient_data
+
+data$SurvObj.os <- with(data, Surv(ostime, osevent))
+data$SurvObj.pfs <- with(data, Surv(pfstime, pfsevent))
+
+```
+
+#Split FRET by Tertiles
+
+```{r}
+
+breaks <- quantile(data$FRET, probs = c(0.0, 0.67, 1.0), na.rm = T)
+data$FRETeff <- cut(data$FRET, breaks = breaks, labels = c("low", "high"), 
+                    include.lowest = T)
+
+col=c("red", "red", "blue", "blue") 
+lty=c(1,2,1,2)
+```
+
+##PFS
+
+```{r}
+
+# rename
+data$PFS.Class <- data$Class.FRET.PFS
+
+km <- survfit(SurvObj.pfs ~ PFS.Class + FRETeff, data=data)
+plot(km, col=col, lty=lty, xlab="PFS days", ylab="Prob. survival")
+legend("topright", col=col, legend = names(km$strata), lty=lty, cex=0.75)
+print(km)
+
+survdiff(SurvObj.pfs ~ PFS.Class, data=data)
+
+survdiff(SurvObj.pfs[PFS.Class==1] ~ FRETeff[PFS.Class==1], data=data)
+survdiff(SurvObj.pfs[PFS.Class==2] ~ FRETeff[PFS.Class==2], data=data)
+
+```
+
+##OS
+
+```{r}
+
+# rename
+data$OS.Class <- data$Class.FRET.OS
+
+km <- survfit(SurvObj.os ~ OS.Class + FRETeff, data=data)
+plot(km, col=col, lty=lty, xlab="OS days", ylab="Prob. survival")
+legend("topright", col=col, legend = names(km$strata), lty=lty, cex=0.75)
+print(km)
+
+survdiff(SurvObj.os ~ OS.Class, data=data)
+
+survdiff(SurvObj.os[OS.Class==1] ~ FRETeff[OS.Class==1], data=data)
+survdiff(SurvObj.os[OS.Class==2] ~ FRETeff[OS.Class==2], data=data)
+```
+
+#Session Information
+
+```{r}
+sessionInfo()
+```
+
+

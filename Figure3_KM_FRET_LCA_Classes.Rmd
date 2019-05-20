@@ -1,0 +1,70 @@
+---
+title: "KM FRET LCA Classes"
+author: "P Barber"
+date: "15 February 2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+load(file = "COIN_Final.Rdata")
+```
+
+```{r}
+library(survival)
+
+data <- patient_data[patient_data$FRET.cohort==1,]
+
+data$SurvObj.os <- with(data, Surv(ostime, osevent))
+data$SurvObj.pfs <- with(data, Surv(pfstime, pfsevent))
+
+col=c("red", "red", "blue", "blue") 
+lty=c(1,2,1,2)
+```
+
+#PFS by class
+
+```{r}
+
+# rename
+data$PFS.Class <- data$Class.FRET.PFS
+
+km <- survfit(SurvObj.pfs ~ PFS.Class + TRT, data=data)
+plot(km, col=col, lty=lty, xlab="PFS days", ylab="Prob. survival")
+legend("topright", col=col, legend = names(km$strata), lty=lty, cex=0.75)
+print(km)
+
+survdiff(SurvObj.pfs ~ PFS.Class, data=data)
+
+survdiff(SurvObj.pfs[PFS.Class==1] ~ TRT[PFS.Class==1], data=data)
+survdiff(SurvObj.pfs[PFS.Class==2] ~ TRT[PFS.Class==2], data=data)
+
+```
+
+#OS by class
+
+```{r}
+
+# rename
+data$OS.Class <- data$Class.FRET.OS
+
+km <- survfit(SurvObj.os ~ OS.Class + TRT, data=data)
+plot(km, col=col, lty=lty, xlab="OS days", ylab="Prob. survival")
+legend("topright", col=col, legend = names(km$strata), lty=lty, cex=0.75)
+print(km)
+
+survdiff(SurvObj.os ~ OS.Class, data=data)
+
+survdiff(SurvObj.os[OS.Class==1] ~ TRT[OS.Class==1], data=data)
+survdiff(SurvObj.os[OS.Class==2] ~ TRT[OS.Class==2], data=data)
+```
+
+#Session Information
+
+```{r}
+sessionInfo()
+```
+

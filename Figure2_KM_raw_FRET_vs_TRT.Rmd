@@ -1,0 +1,55 @@
+---
+title: "KM raw FRET vs TRT"
+author: "P Barber"
+date: "09 April 2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Plot KM curves split by raw FRET value and TRT.
+
+```{r}
+load(file = "COIN_Final.Rdata")
+```
+
+#Survival Curves split by TRT and FRET Eff
+
+##Split by Tertiles
+
+Split FRET into tertiles with FRET high considered to be in the upper tertile (upper 66%-100% of data).
+
+```{r, echo=F}
+
+data <- patient_data
+
+library(survival)
+data$SurvObj.pfs <- with(data, Surv(pfstime, pfsevent))
+data$SurvObj.os <- with(data, Surv(ostime, osevent))
+col=c("red", "red", "blue", "blue") 
+lty=c(1,2,1,2)
+
+breaks <- quantile(data$FRET, probs = c(0.0, 0.67, 1.0), na.rm = T)
+data$FRETeff <- cut(data$FRET, breaks = breaks, labels = c("low", "high"), include.lowest = T)
+
+km <- survfit(SurvObj.pfs ~ FRETeff + TRT, data=data)
+plot(km, col=col, xlab="PFS days", ylab="Prob. survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty)
+print(km)
+
+survdiff(SurvObj.pfs ~ FRETeff, data=data)
+survdiff(SurvObj.pfs[FRETeff=="low"] ~ TRT[FRETeff=="low"], data=data)
+survdiff(SurvObj.pfs[FRETeff=="high"] ~ TRT[FRETeff=="high"], data=data)
+
+km <- survfit(SurvObj.os ~ FRETeff + TRT, data=data)
+plot(km, col=col, xlab="OS days", ylab="Prob. survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty=lty)
+print(km)
+
+survdiff(SurvObj.os ~ FRETeff, data=data)
+survdiff(SurvObj.os[FRETeff=="low"] ~ TRT[FRETeff=="low"], data=data)
+survdiff(SurvObj.os[FRETeff=="high"] ~ TRT[FRETeff=="high"], data=data)
+
+```
