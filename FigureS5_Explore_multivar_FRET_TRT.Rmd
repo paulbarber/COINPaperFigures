@@ -1,0 +1,776 @@
+---
+title: "Explore covariates of the signature"
+author: "P Barber"
+date: "2 October 2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+NA2mean <- function(x) replace(x, is.na(x), mean(x, na.rm = TRUE))
+replaceNA <- function (df, v) {
+  # replace NA in each col of df with a value from the vector v
+ for(i in 1:ncol(df)) { 
+    c <- df[, i]
+    c <- replace(c, is.na(c), v[i])
+    df[, i] <- c
+ }
+  return(df)
+}
+library(filesstrings)
+library(survival)
+library(survminer)
+#source("plotHRTable.R")
+library(knitr)
+#library(kableExtra)
+library(ggplot2)
+```
+
+#Load patient data
+
+```{r}
+load("COIN_Final.Rdata")
+patient_data$SurvObj.pfs <- with(patient_data, Surv(pfstime, pfsevent))
+patient_data$SurvObj.os <- with(patient_data, Surv(ostime, osevent))
+```
+
+##Encode, Impute Covariates
+
+Isolate those covariates known to be needed for Risk Signatures etc. Impute by replacing NA by the average of other patients.
+
+```{r}
+encoded_data <- with(patient_data, data.frame(SUMLES, WBC, NEUT, SHB0, FRET, FRET.cohort))
+
+encoded_data$RAS.Mutation <- ifelse(patient_data$RAS=="Mutation", 1, 0)
+encoded_data$mlivonly <- ifelse(patient_data$mlivonly=="Yes", 1, 0)
+encoded_data$PIK3CA.Mutation <- ifelse(patient_data$PIK3CA=="Mutation", 1, 0)
+
+# Get means from the 398
+df <- encoded_data[encoded_data$FRET.cohort==1,]
+df <- subset(df, select = -c(FRET.cohort))
+trained_means <- colMeans(df, na.rm = T)
+
+# remove FREt.cohort col
+encoded_data <- subset(encoded_data, select = -c(FRET.cohort))
+
+# Apply to all data
+#encoded_data[] <- lapply(encoded_data, NA2mean)
+encoded_data[] <- replaceNA(encoded_data, trained_means)
+```
+
+#Load risk signature classifier
+
+```{r}
+
+Class_Predictor <- 
+  read.table("SP_Classifier_Score/COIN_withFRET_July16/RiskScore_formula.txt",
+                        sep = '*', col.names = c("Weight", "Covariate"), 
+                        stringsAsFactors = F, skip = 2, fill = T)
+
+kable(Class_Predictor)
+```
+
+```{r}
+# Load output from Saddle Point Signature and tidy up
+Class_Predictor_Betas <- 
+  read.table("SP_Classifier_Score/COIN_withFRET_July16/SETCV_L2/betas_with_errors_optimised.txt",
+             sep = ' ', col.names = c("Covariate", "beta", "pm", "error", 
+                                      "rank", "z.score", "p.value"), 
+             stringsAsFactors = F)
+
+Class_Predictor_Betas <- subset(Class_Predictor_Betas, select=-pm)
+Class_Predictor_Betas$Covariate <- sub(":$", "", Class_Predictor_Betas$Covariate)
+Class_Predictor_Betas$beta <- as.numeric(
+  sub("^beta\\[\\d+]=", "", Class_Predictor_Betas$beta))
+Class_Predictor_Betas$rank <- last_number(Class_Predictor_Betas$rank, 
+                                           decimals = F, negs = F)
+Class_Predictor_Betas$z.score <- last_number(Class_Predictor_Betas$z.score, 
+                                           decimals = T, negs = F)
+Class_Predictor_Betas$p.value <- last_number(Class_Predictor_Betas$p.value, 
+                                           decimals = T, negs = F)
+
+# Create new cols as required
+Class_Predictor_Betas$description <- Class_Predictor_Betas$Covariate
+Class_Predictor_Betas$description <- 
+  sub("SUMLES", "Sum of longest diameter", Class_Predictor_Betas$description)
+Class_Predictor_Betas$description <- 
+  sub("WBC", "White blood cell count", Class_Predictor_Betas$description)
+Class_Predictor_Betas$description <- 
+  sub("NEUT", "Neutrophil count", Class_Predictor_Betas$description)
+Class_Predictor_Betas$description <- 
+  sub("SHB0", "Haemaglobin (CTC grade)", Class_Predictor_Betas$description)
+#Class_Predictor_Betas$description <- 
+#  sub("FRET", "HER2-HER3 FRET efficiency", Class_Predictor_Betas$description)
+Class_Predictor_Betas$description <- 
+  sub("mlivonly", "Liver-only metastases", Class_Predictor_Betas$description)
+Class_Predictor_Betas$description <- 
+  sub("PIK3CA.Mutation", "PIK3CA mutation", Class_Predictor_Betas$description)
+
+Class_Predictor_Betas$HR <- exp(Class_Predictor_Betas$beta)
+Class_Predictor_Betas$HR.U95.CI <- exp(Class_Predictor_Betas$beta+Class_Predictor_Betas$error)
+Class_Predictor_Betas$HR.L95.CI <- exp(Class_Predictor_Betas$beta-Class_Predictor_Betas$error)
+
+# Add the constant as new row
+Class_Predictor_Betas <- rbind(Class_Predictor_Betas, 
+                               list("Constant", NA, NA, NA, NA, 0, "Constant", 1, 1, 1))
+
+Class_Predictor_Betas$Weight <- Class_Predictor$Weight
+Class_Predictor_Betas$Weight <- str_remove(Class_Predictor_Betas$Weight, "S=\\(")
+Class_Predictor_Betas$Weight <- str_remove(Class_Predictor_Betas$Weight, "\\+ \\(")
+Class_Predictor_Betas$Weight <- sub("\\- \\(", "-", Class_Predictor_Betas$Weight)
+Class_Predictor_Betas$Weight <- str_remove(Class_Predictor_Betas$Weight, "\\)")
+Class_Predictor_Betas$Weight <- as.numeric(Class_Predictor_Betas$Weight)
+
+
+```
+
+
+#Calculate Total Risk Score
+
+```{r}
+patient_data$Class_Pred_Score <- calculateRiskScore(Class_Predictor, encoded_data)
+```
+
+
+#Calculate Residual Risk Scores
+
+```{r}
+patient_data$FRET_Residual_Score <- calculateRiskScore(subset(Class_Predictor, Covariate!="FRET"), encoded_data)
+patient_data$SUMLES_Residual_Score <- calculateRiskScore(subset(Class_Predictor, Covariate!="SUMLES"), encoded_data)
+patient_data$WBC_Residual_Score <- calculateRiskScore(subset(Class_Predictor, Covariate!="WBC"), encoded_data)
+patient_data$NEUT_Residual_Score <- calculateRiskScore(subset(Class_Predictor, Covariate!="NEUT"), encoded_data)
+patient_data$SHB0_Residual_Score <- calculateRiskScore(subset(Class_Predictor, Covariate!="SHB0"), encoded_data)
+patient_data$mlivonly_Residual_Score <- calculateRiskScore(subset(Class_Predictor, Covariate!="mlivonly"), encoded_data)
+patient_data$PIK3CA.Mutation_Residual_Score <- calculateRiskScore(subset(Class_Predictor, Covariate!="PIK3CA.Mutation"), encoded_data)
+```
+
+#ROC
+
+ROC curve for the 398 training data, these are the ones that we have ground truth FRET OS Class for. 
+
+```{r, fig.height=4, fig.width=4}
+library(pROC)
+
+pROC_obj <- roc(patient_data$Class.FRET.OS, patient_data$Class_Pred_Score,
+            smoothed = TRUE,
+            # arguments for ci
+            ci=FALSE, ci.alpha=0.9, stratified=FALSE,
+            # arguments for plot
+            plot=TRUE, auc.polygon=TRUE, max.auc.polygon=TRUE, grid=TRUE,
+            print.auc=TRUE, print.thres=TRUE)
+
+```
+
+##Choose an optimal threshold
+
+```{r}
+optimal <- coords(pROC_obj, x="best", input="threshold", best.method="youden")
+optimal
+threshold = optimal[1]
+```
+
+#Classify all patients according to predicted LCA Class
+
+```{r}
+patient_data$Pred.Class <- ifelse(patient_data$Class_Pred_Score>threshold, 2, 1)
+```
+
+#Investigate FRET vs its Residual Score
+
+##Get fresh data set of FRET patients
+
+```{r}
+data <- subset(patient_data, FRET.cohort!=0)
+```
+
+##Classifiy FRET patients according to raw FRET
+
+```{r}
+# Cut data and name change
+data$FRETraw <- data$FRET
+breaks <- quantile(data$FRETraw, probs = c(0.0, 0.5, 1.0), na.rm = T)
+data$FRET <- cut(data$FRETraw, breaks = breaks, labels = c("low", "high"), include.lowest = T)
+```
+
+##Group patients according to FRET and predicted class
+
+```{r}
+data$Group <- ifelse(data$FRET == "low",
+                     ifelse(data$Pred.Class == 1, "iii", "i"),
+                     ifelse(data$Pred.Class == 1, "iv", "ii"))
+```
+
+##Plot FRET vs residual signature
+
+```{r}
+data <- subset(data, FRET_Residual_Score<10)   # one outlier: really high residual score
+
+ggplot(data, aes(FRETraw, FRET_Residual_Score)) +
+  geom_point(aes(color = Group, shape = TRT))
+```
+
+##Plot survival curves for the groups
+
+```{r}
+col=c("#F8766D", "#7CAe00", "#00BFC4", "#C77CFF") # ggplot default colours
+lty=c(1)
+
+km <- survfit(SurvObj.os ~ Group, data=data)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+```
+
+```{r}
+col=c("red", "blue") 
+lty=c(1,2)
+
+data_g <- subset(data, Group=="i")
+
+km <- survfit(SurvObj.os ~ TRT, data=data_g)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+survdiff(SurvObj.os ~ TRT, data=data_g)
+
+data_g <- subset(data, Group=="ii")
+
+km <- survfit(SurvObj.os ~ TRT, data=data_g)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+survdiff(SurvObj.os ~ TRT, data=data_g)
+
+data_g <- subset(data, Group=="iii")
+
+km <- survfit(SurvObj.os ~ TRT, data=data_g)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+survdiff(SurvObj.os ~ TRT, data=data_g)
+
+data_g <- subset(data, Group=="iv")
+
+km <- survfit(SurvObj.os ~ TRT, data=data_g)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+survdiff(SurvObj.os ~ TRT, data=data_g)
+
+
+```
+
+#Investigate SUMLES vs its Residual Score
+
+##Get fresh data set of FRET patients
+
+```{r}
+data <- subset(patient_data, FRET.cohort!=0)
+```
+
+##Classifiy FRET patients according to SUMLES
+
+```{r}
+data$SUMLESraw <- data$SUMLES
+breaks <- quantile(data$SUMLESraw, probs = c(0.0, 0.5, 1.0), na.rm = T)
+data$SUMLES <- cut(data$SUMLESraw, breaks = breaks, labels = c("low", "high"), include.lowest = T)
+```
+
+##Group patients according to SUMLES and predicted class
+
+```{r}
+data$Group <- ifelse(data$SUMLES == "low",
+                     ifelse(data$Pred.Class == 1, "iii", "i"),
+                     ifelse(data$Pred.Class == 1, "iv", "ii"))
+```
+
+##Plot SUMLES vs residual signature
+
+```{r}
+data <- subset(data, SUMLES_Residual_Score<8)   # one outlier: really high residual score
+
+ggplot(data, aes(SUMLESraw, SUMLES_Residual_Score)) +
+  geom_point(aes(color = Group, shape = TRT))
+```
+
+##Plot survival curves for the groups
+
+```{r}
+col=c("#F8766D", "#7CAe00", "#00BFC4", "#C77CFF") # ggplot default colours
+lty=c(1)
+
+km <- survfit(SurvObj.os ~ Group, data=data)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+```
+
+```{r}
+col=c("red", "blue") 
+lty=c(1,2)
+
+data_g <- subset(data, Group=="i")
+
+km <- survfit(SurvObj.os ~ TRT, data=data_g)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+survdiff(SurvObj.os ~ TRT, data=data_g)
+
+data_g <- subset(data, Group=="ii")
+
+km <- survfit(SurvObj.os ~ TRT, data=data_g)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+survdiff(SurvObj.os ~ TRT, data=data_g)
+
+data_g <- subset(data, Group=="iii")
+
+km <- survfit(SurvObj.os ~ TRT, data=data_g)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+survdiff(SurvObj.os ~ TRT, data=data_g)
+
+data_g <- subset(data, Group=="iv")
+
+km <- survfit(SurvObj.os ~ TRT, data=data_g)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+survdiff(SurvObj.os ~ TRT, data=data_g)
+
+
+```
+
+
+#Investigate WBC vs its Residual Score
+
+##Get fresh data set of FRET patients
+
+```{r}
+data <- subset(patient_data, FRET.cohort!=0)
+```
+
+##Classifiy FRET patients according to WBC
+
+```{r}
+data$WBCraw <- data$WBC
+breaks <- quantile(data$WBCraw, probs = c(0.0, 0.5, 1.0), na.rm = T)
+data$WBC <- cut(data$WBCraw, breaks = breaks, labels = c("low", "high"), include.lowest = T)
+```
+
+##Group patients according to WBC and predicted class
+
+```{r}
+data$Group <- ifelse(data$WBC == "low",
+                     ifelse(data$Pred.Class == 1, "iii", "i"),
+                     ifelse(data$Pred.Class == 1, "iv", "ii"))
+```
+
+##Plot WBC vs residual signature
+
+```{r}
+data <- subset(data, WBC_Residual_Score<8)   # one outlier: really high residual score
+
+ggplot(data, aes(WBCraw, WBC_Residual_Score)) +
+  geom_point(aes(color = Group, shape = TRT))
+```
+
+##Plot survival curves for the groups
+
+```{r}
+col=c("#F8766D", "#7CAe00", "#00BFC4", "#C77CFF") # ggplot default colours
+lty=c(1)
+
+km <- survfit(SurvObj.os ~ Group, data=data)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+```
+
+```{r}
+col=c("red", "blue") 
+lty=c(1,2)
+
+data_g <- subset(data, Group=="i")
+
+km <- survfit(SurvObj.os ~ TRT, data=data_g)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+survdiff(SurvObj.os ~ TRT, data=data_g)
+
+data_g <- subset(data, Group=="ii")
+
+km <- survfit(SurvObj.os ~ TRT, data=data_g)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+survdiff(SurvObj.os ~ TRT, data=data_g)
+
+data_g <- subset(data, Group=="iii")
+
+km <- survfit(SurvObj.os ~ TRT, data=data_g)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+survdiff(SurvObj.os ~ TRT, data=data_g)
+
+data_g <- subset(data, Group=="iv")
+
+km <- survfit(SurvObj.os ~ TRT, data=data_g)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+survdiff(SurvObj.os ~ TRT, data=data_g)
+
+
+```
+
+
+#Investigate NEUT vs its Residual Score
+
+##Get fresh data set of FRET patients
+
+```{r}
+data <- subset(patient_data, FRET.cohort!=0)
+```
+
+##Classifiy FRET patients according to NEUT
+
+```{r}
+data$NEUTraw <- data$NEUT
+breaks <- quantile(data$NEUTraw, probs = c(0.0, 0.5, 1.0), na.rm = T)
+data$NEUT <- cut(data$NEUTraw, breaks = breaks, labels = c("low", "high"), include.lowest = T)
+```
+
+##Group patients according to NEUT and predicted class
+
+```{r}
+data$Group <- ifelse(data$NEUT == "low",
+                     ifelse(data$Pred.Class == 1, "iii", "i"),
+                     ifelse(data$Pred.Class == 1, "iv", "ii"))
+```
+
+##Plot NEUT vs residual signature
+
+```{r}
+#data <- subset(data, NEUT_Residual_Score<8)   # one outlier: really high residual score
+
+ggplot(data, aes(NEUTraw, NEUT_Residual_Score)) +
+  geom_point(aes(color = Group, shape = TRT))
+```
+
+##Plot survival curves for the groups
+
+```{r}
+col=c("#F8766D", "#7CAe00", "#00BFC4", "#C77CFF") # ggplot default colours
+lty=c(1)
+
+km <- survfit(SurvObj.os ~ Group, data=data)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+```
+
+```{r}
+col=c("red", "blue") 
+lty=c(1,2)
+
+data_g <- subset(data, Group=="i")
+
+km <- survfit(SurvObj.os ~ TRT, data=data_g)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+survdiff(SurvObj.os ~ TRT, data=data_g)
+
+data_g <- subset(data, Group=="ii")
+
+km <- survfit(SurvObj.os ~ TRT, data=data_g)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+survdiff(SurvObj.os ~ TRT, data=data_g)
+
+data_g <- subset(data, Group=="iii")
+
+km <- survfit(SurvObj.os ~ TRT, data=data_g)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+survdiff(SurvObj.os ~ TRT, data=data_g)
+
+data_g <- subset(data, Group=="iv")
+
+km <- survfit(SurvObj.os ~ TRT, data=data_g)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+survdiff(SurvObj.os ~ TRT, data=data_g)
+
+
+```
+
+#Investigate SHB0 vs its Residual Score
+
+##Get fresh data set of FRET patients
+
+```{r}
+data <- subset(patient_data, FRET.cohort!=0)
+```
+
+##Classifiy FRET patients according to SHB0
+
+```{r}
+data$SHB0raw <- data$SHB0
+data$SHB0 <- ifelse(data$SHB0raw > 0, "high", "low")
+```
+
+##Group patients according to SHB0 and predicted class
+
+```{r}
+data$Group <- ifelse(data$SHB0 == "low",
+                     ifelse(data$Pred.Class == 1, "iii", "i"),
+                     ifelse(data$Pred.Class == 1, "iv", "ii"))
+```
+
+##Plot SHB0 vs residual signature
+
+```{r}
+#data <- subset(data, SHB0_Residual_Score<8)   # one outlier: really high residual score
+
+ggplot(data, aes(SHB0raw, SHB0_Residual_Score)) +
+  geom_jitter(width=0.2, aes(color = Group, shape = TRT))
+```
+
+##Plot survival curves for the groups
+
+```{r}
+col=c("#F8766D", "#7CAe00", "#00BFC4", "#C77CFF") # ggplot default colours
+lty=c(1)
+
+km <- survfit(SurvObj.os ~ Group, data=data)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+```
+
+```{r}
+col=c("red", "blue") 
+lty=c(1,2)
+
+data_g <- subset(data, Group=="i")
+
+km <- survfit(SurvObj.os ~ TRT, data=data_g)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+survdiff(SurvObj.os ~ TRT, data=data_g)
+
+data_g <- subset(data, Group=="ii")
+
+km <- survfit(SurvObj.os ~ TRT, data=data_g)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+survdiff(SurvObj.os ~ TRT, data=data_g)
+
+data_g <- subset(data, Group=="iii")
+
+km <- survfit(SurvObj.os ~ TRT, data=data_g)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+survdiff(SurvObj.os ~ TRT, data=data_g)
+
+data_g <- subset(data, Group=="iv")
+
+km <- survfit(SurvObj.os ~ TRT, data=data_g)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+survdiff(SurvObj.os ~ TRT, data=data_g)
+
+
+```
+
+#Investigate mlivonly vs its Residual Score
+
+##Get fresh data set of FRET patients
+
+```{r}
+data <- subset(patient_data, FRET.cohort!=0)
+```
+
+##Group patients according to mlivonly and predicted class
+
+```{r}
+data$Group <- ifelse(data$mlivonly == "No",
+                     ifelse(data$Pred.Class == 1, "iii", "i"),
+                     ifelse(data$Pred.Class == 1, "iv", "ii"))
+```
+
+##Plot mlivonly vs residual signature
+
+```{r}
+#data <- subset(data, mlivonly_Residual_Score<8)   # one outlier: really high residual score
+
+ggplot(data, aes(mlivonly, mlivonly_Residual_Score)) +
+  geom_jitter(width=0.2, aes(color = Group, shape = TRT))
+```
+
+##Plot survival curves for the groups
+
+```{r}
+col=c("#F8766D", "#7CAe00", "#00BFC4", "#C77CFF") # ggplot default colours
+lty=c(1)
+
+km <- survfit(SurvObj.os ~ Group, data=data)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+```
+
+```{r}
+col=c("red", "blue") 
+lty=c(1,2)
+
+data_g <- subset(data, Group=="i")
+
+km <- survfit(SurvObj.os ~ TRT, data=data_g)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+survdiff(SurvObj.os ~ TRT, data=data_g)
+
+data_g <- subset(data, Group=="ii")
+
+km <- survfit(SurvObj.os ~ TRT, data=data_g)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+survdiff(SurvObj.os ~ TRT, data=data_g)
+
+data_g <- subset(data, Group=="iii")
+
+km <- survfit(SurvObj.os ~ TRT, data=data_g)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+survdiff(SurvObj.os ~ TRT, data=data_g)
+
+data_g <- subset(data, Group=="iv")
+
+km <- survfit(SurvObj.os ~ TRT, data=data_g)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+survdiff(SurvObj.os ~ TRT, data=data_g)
+
+
+```
+
+#Investigate PIK3CA.Mutation vs its Residual Score
+
+##Get fresh data set of FRET patients
+
+```{r}
+data <- subset(patient_data, FRET.cohort!=0)
+```
+
+
+##Group patients according to PIK3CA.Mutation and predicted class
+
+```{r}
+data$Group <- ifelse(data$PIK3CA == "Wild-type",
+                     ifelse(data$Pred.Class == 1, "iii", "i"),
+                     ifelse(data$Pred.Class == 1, "iv", "ii"))
+```
+
+##Plot PIK3CA.Mutation vs residual signature
+
+```{r}
+#data <- subset(data, PIK3CA.Mutation_Residual_Score<8)   # one outlier: really high residual score
+
+ggplot(data, aes(PIK3CA, PIK3CA.Mutation_Residual_Score)) +
+  geom_jitter(width=0.2, aes(color = Group, shape = TRT))
+```
+
+##Plot survival curves for the groups
+
+```{r}
+col=c("#F8766D", "#7CAe00", "#00BFC4", "#C77CFF") # ggplot default colours
+lty=c(1)
+
+km <- survfit(SurvObj.os ~ Group, data=data)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+```
+
+```{r}
+col=c("red", "blue") 
+lty=c(1,2)
+
+data_g <- subset(data, Group=="i")
+
+km <- survfit(SurvObj.os ~ TRT, data=data_g)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+survdiff(SurvObj.os ~ TRT, data=data_g)
+
+data_g <- subset(data, Group=="ii")
+
+km <- survfit(SurvObj.os ~ TRT, data=data_g)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+survdiff(SurvObj.os ~ TRT, data=data_g)
+
+data_g <- subset(data, Group=="iii")
+
+km <- survfit(SurvObj.os ~ TRT, data=data_g)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+survdiff(SurvObj.os ~ TRT, data=data_g)
+
+data_g <- subset(data, Group=="iv")
+
+km <- survfit(SurvObj.os ~ TRT, data=data_g)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n")
+print(km)
+survdiff(SurvObj.os ~ TRT, data=data_g)
+
+
+```
+
+
+#Other plots
+
+```{r, eval=F}
+dataA <- subset(data, TRT=="A")
+
+ggplot(dataA, aes(FRETraw, Class_Pred_Residual_Score)) +
+  geom_point(aes(color = ostime, shape = as.ordered(Pred.Class))) +
+  scale_colour_gradient2()
+
+dataB <- subset(data, TRT=="B")
+
+ggplot(dataB, aes(FRETraw, Class_Pred_Residual_Score)) +
+  geom_point(aes(color = ostime, shape = as.ordered(Pred.Class))) +
+  scale_colour_gradient2()
+
+
+```
+
+#Session Information
+
+```{r}
+sessionInfo()
+```

@@ -1,12 +1,33 @@
 ---
-title: "KM FRET LCA Classes"
+title: "FRET LCA Classes"
 author: "P Barber"
-date: "15 February 2019"
+date: "22 October 2019"
 output: pdf_document
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+source("plotHRTable.R")
+library(survminer)
+
+JNCI_pvals <- function(p){
+  if(is.na(p)){
+    return("")
+  }
+  else if(p<0.001){
+    return("<0.001***")
+  } 
+  else if (p<0.01){
+    return(paste0(format(round(p, 3), nsmall = 3), "**"))
+  }
+  else if (p<0.05){
+    return(paste0(format(round(p, 2), nsmall = 2), "*"))
+  }
+  else{
+    return(format(round(p, 2), nsmall = 2))
+  }
+}
+
 ```
 
 ```{r}
@@ -25,35 +46,142 @@ col=c("red", "red", "blue", "blue")
 lty=c(1,2,1,2)
 ```
 
+#Split FRET by Tertiles, and Rename to use FRET in the paper
+
+```{r}
+
+breaks <- quantile(data$FRET, probs = c(0.0, 0.67, 1.0), na.rm = T)
+data$FRETeff <- cut(data$FRET, breaks = breaks, labels = c("low", "high"), 
+                    include.lowest = T)
+data$FRET_raw <- data$FRET
+data$FRET <- data$FRETeff
+```
+
 #PFS by class
+
+```{r, fig.height=4}
+library(filesstrings)
+
+FRET_LCA <- LCA_FRET_PFS_HR
+
+# Change any covarite names
+FRET_LCA$Covname[c(1,5)] = "TRT arm B"
+FRET_LCA$Covname[c(3,7)] = "FRET x HER3"
+FRET_LCA$Covname[c(4,8)] = "RAS mutation"
+
+# insert rows of NA to break the classes up, do lower one first - easier to track row numbers
+insert_row <- c(NA,NA,NA,"",NA,"")
+FRET_LCA = rbind(FRET_LCA[1:4,], insert_row, FRET_LCA[-(1:4),])
+
+# Highlight points with colours (account for inserted rows)
+colours <- c("black","black","black","black",
+             "black",
+             "black","blue","black","black")
+
+mydf <- data.frame(
+    Covariate = FRET_LCA$Covname,
+    Class = FRET_LCA$Class,
+    HazardRatio = as.numeric(FRET_LCA$HR),
+    HazardLower = first_number(FRET_LCA$X95.CI, decimals=T),
+    HazardUpper = nth_number(FRET_LCA$X95.CI, 2, decimals=T),
+    Pvalue = sapply(as.numeric(FRET_LCA$p.value), JNCI_pvals),
+    stringsAsFactors=FALSE
+)
+
+plotHRTable(mydf, useClass = T, useWeight = F, useRank = F, col = colours)
+
+```
+
 
 ```{r}
 
 # rename
 data$PFS.Class <- data$Class.FRET.PFS
 
+km <- survfit(SurvObj.pfs ~ PFS.Class, data=data)
+print(km)
+
 km <- survfit(SurvObj.pfs ~ PFS.Class + TRT, data=data)
-plot(km, col=col, lty=lty, xlab="PFS days", ylab="Prob. survival")
-legend("topright", col=col, legend = names(km$strata), lty=lty, cex=0.75)
+plot(km, col=col, lty=lty, xlab="Progression Free Survival (days)", ylab="Probability of Survival")
+legend("topright", col=col, legend = names(km$strata), lty=lty, bty="n", cex=0.8)
 print(km)
 
 survdiff(SurvObj.pfs ~ PFS.Class, data=data)
 
 survdiff(SurvObj.pfs[PFS.Class==1] ~ TRT[PFS.Class==1], data=data)
 survdiff(SurvObj.pfs[PFS.Class==2] ~ TRT[PFS.Class==2], data=data)
+```
+
+```{r, fig.height=1.8, fig.width=10}
+ggrisktable(km, data=data) + theme_cleantable()
+```
+
+```{r}
+km <- survfit(SurvObj.pfs ~ PFS.Class + FRET, data=data)
+plot(km, col=col, lty=lty, xlab="Progression Free Survival (days)", ylab="Probability of Survival")
+legend("topright", col=col, legend = names(km$strata), lty=lty, bty="n", cex=0.8)
+print(km)
+
+survdiff(SurvObj.pfs ~ PFS.Class, data=data)
+
+survdiff(SurvObj.pfs[PFS.Class==1] ~ FRET[PFS.Class==1], data=data)
+survdiff(SurvObj.pfs[PFS.Class==2] ~ FRET[PFS.Class==2], data=data)
 
 ```
 
+```{r, fig.height=1.8, fig.width=10}
+ggrisktable(km, data=data) + theme_cleantable()
+```
+
+
 #OS by class
+
+
+```{r, fig.height=4}
+library(filesstrings)
+
+FRET_LCA <- LCA_FRET_OS_HR
+
+# Change any covarite names
+FRET_LCA$Covname[c(1,5)] = "TRT arm B"
+FRET_LCA$Covname[c(3,7)] = "FRET x HER3"
+FRET_LCA$Covname[c(4,8)] = "RAS mutation"
+
+# insert rows of NA to break the classes up, do lower one first - easier to track row numbers
+insert_row <- c(NA,NA,NA,"",NA,"")
+FRET_LCA = rbind(FRET_LCA[1:4,], insert_row, FRET_LCA[-(1:4),])
+
+# Highlight points with colours (account for inserted rows)
+colours <- c("red","black","black","black",
+             "black",
+             "black","blue","black","black")
+
+mydf <- data.frame(
+    Covariate = FRET_LCA$Covname,
+    Class = FRET_LCA$Class,
+    HazardRatio = as.numeric(FRET_LCA$HR),
+    HazardLower = first_number(FRET_LCA$X95.CI, decimals=T),
+    HazardUpper = nth_number(FRET_LCA$X95.CI, 2, decimals=T),
+    Pvalue = sapply(as.numeric(FRET_LCA$p.value), JNCI_pvals),
+    stringsAsFactors=FALSE
+)
+
+plotHRTable(mydf, useClass = T, useWeight = F, useRank = F, col = colours)
+
+```
+
 
 ```{r}
 
 # rename
 data$OS.Class <- data$Class.FRET.OS
 
+km <- survfit(SurvObj.os ~ OS.Class, data=data)
+print(km)
+
 km <- survfit(SurvObj.os ~ OS.Class + TRT, data=data)
-plot(km, col=col, lty=lty, xlab="OS days", ylab="Prob. survival")
-legend("topright", col=col, legend = names(km$strata), lty=lty, cex=0.75)
+plot(km, col=col, lty=lty, xlab="Overall Survival (days)", ylab="Probability of Survival")
+legend("topright", col=col, legend = names(km$strata), lty=lty, bty="n", cex=0.8)
 print(km)
 
 survdiff(SurvObj.os ~ OS.Class, data=data)
@@ -61,6 +189,27 @@ survdiff(SurvObj.os ~ OS.Class, data=data)
 survdiff(SurvObj.os[OS.Class==1] ~ TRT[OS.Class==1], data=data)
 survdiff(SurvObj.os[OS.Class==2] ~ TRT[OS.Class==2], data=data)
 ```
+
+```{r, fig.height=1.8, fig.width=10}
+ggrisktable(km, data=data) + theme_cleantable()
+```
+
+```{r}
+km <- survfit(SurvObj.os ~ OS.Class + FRET, data=data)
+plot(km, col=col, lty=lty, xlab="Overall Survival (days)", ylab="Probability of Survival")
+legend("topright", col=col, legend = names(km$strata), lty=lty, bty="n", cex=0.8)
+print(km)
+
+survdiff(SurvObj.os ~ OS.Class, data=data)
+
+survdiff(SurvObj.os[OS.Class==1] ~ FRET[OS.Class==1], data=data)
+survdiff(SurvObj.os[OS.Class==2] ~ FRET[OS.Class==2], data=data)
+```
+
+```{r, fig.height=1.8, fig.width=10}
+ggrisktable(km, data=data) + theme_cleantable()
+```
+
 
 #Session Information
 

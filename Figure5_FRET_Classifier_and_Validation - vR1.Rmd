@@ -1,0 +1,356 @@
+---
+title: "FRET Classifier and Validation"
+author: "P Barber"
+date: "27 September 2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+NA2mean <- function(x) replace(x, is.na(x), mean(x, na.rm = TRUE))
+replaceNA <- function (df, v) {
+  # replace NA in each col of df with a value from the vector v
+ for(i in 1:ncol(df)) { 
+    c <- df[, i]
+    c <- replace(c, is.na(c), v[i])
+    df[, i] <- c
+ }
+  return(df)
+}
+library(filesstrings)
+library(survminer)
+#source("plotHRTable.R")
+library(knitr)
+library(kableExtra)
+
+JNCI_pvals <- function(p){
+  if(is.na(p)){
+    return("")
+  }
+  else if(p<0.001){
+    return("<0.001***")
+  } 
+  else if(p==0.001){
+    return("0.001***")
+  } 
+  else if (p<0.01){
+    return(paste0(format(round(p, 3), nsmall = 3), "**"))
+  }
+  else if (p<0.05){
+    return(paste0(format(round(p, 2), nsmall = 2), "*"))
+  }
+  else{
+    return(format(round(p, 2), nsmall = 2))
+  }
+}
+
+```
+
+#Load patient data
+
+```{r}
+load("COIN_Final.Rdata")
+```
+
+##Encode, Impute Covariates
+
+Isolate those covariates known to be needed for Risk Signatures etc. Impute by replacing NA by the average of other patients.
+
+```{r}
+encoded_data <- with(patient_data, data.frame(SUMLES, WBC, NEUT, SHB0, FRET, FRET.cohort))
+
+encoded_data$RAS.Mutation <- ifelse(patient_data$RAS=="Mutation", 1, 0)
+encoded_data$mlivonly <- ifelse(patient_data$mlivonly=="Yes", 1, 0)
+encoded_data$PIK3CA.Mutation <- ifelse(patient_data$PIK3CA=="Mutation", 1, 0)
+
+# Get means from the 398
+df <- encoded_data[encoded_data$FRET.cohort==1,]
+df <- subset(df, select = -c(FRET.cohort))
+trained_means <- colMeans(df, na.rm = T)
+
+# remove FREt.cohort col
+encoded_data <- subset(encoded_data, select = -c(FRET.cohort))
+
+# Apply to all data
+#encoded_data[] <- lapply(encoded_data, NA2mean)
+encoded_data[] <- replaceNA(encoded_data, trained_means)
+```
+
+#Load risk signature classifier
+
+```{r}
+
+Class_Predictor <- 
+  read.table("SP_Classifier_Score/COIN_withFRET_July16/RiskScore_formula.txt",
+                        sep = '*', col.names = c("Weight", "Covariate"), 
+                        stringsAsFactors = F, skip = 2, fill = T)
+
+kable(Class_Predictor)
+```
+
+```{r}
+# Load output from Saddle Point Signature and tidy up
+Class_Predictor_Betas <- 
+  read.table("SP_Classifier_Score/COIN_withFRET_July16/SETCV_L2/betas_with_errors_optimised.txt",
+             sep = ' ', col.names = c("Covariate", "beta", "pm", "error", 
+                                      "rank", "z.score", "p.value"), 
+             stringsAsFactors = F)
+
+Class_Predictor_Betas <- subset(Class_Predictor_Betas, select=-pm)
+Class_Predictor_Betas$Covariate <- sub(":$", "", Class_Predictor_Betas$Covariate)
+Class_Predictor_Betas$beta <- as.numeric(
+  sub("^beta\\[\\d+]=", "", Class_Predictor_Betas$beta))
+Class_Predictor_Betas$rank <- last_number(Class_Predictor_Betas$rank, 
+                                           decimals = F, negs = F)
+Class_Predictor_Betas$z.score <- last_number(Class_Predictor_Betas$z.score, 
+                                           decimals = T, negs = F)
+Class_Predictor_Betas$p.value <- last_number(Class_Predictor_Betas$p.value, 
+                                           decimals = T, negs = F)
+
+# Create new cols as required
+Class_Predictor_Betas$description <- Class_Predictor_Betas$Covariate
+Class_Predictor_Betas$description <- 
+  sub("SUMLES", "Sum of longest diameter", Class_Predictor_Betas$description)
+Class_Predictor_Betas$description <- 
+  sub("WBC", "White blood cell count", Class_Predictor_Betas$description)
+Class_Predictor_Betas$description <- 
+  sub("NEUT", "Neutrophil count", Class_Predictor_Betas$description)
+Class_Predictor_Betas$description <- 
+  sub("SHB0", "Haemaglobin (CTC grade)", Class_Predictor_Betas$description)
+#Class_Predictor_Betas$description <- 
+#  sub("FRET", "HER2-HER3 FRET efficiency", Class_Predictor_Betas$description)
+Class_Predictor_Betas$description <- 
+  sub("mlivonly", "Liver-only metastases", Class_Predictor_Betas$description)
+Class_Predictor_Betas$description <- 
+  sub("PIK3CA.Mutation", "PIK3CA mutation", Class_Predictor_Betas$description)
+
+Class_Predictor_Betas$HR <- exp(Class_Predictor_Betas$beta)
+Class_Predictor_Betas$HR.U95.CI <- exp(Class_Predictor_Betas$beta+Class_Predictor_Betas$error)
+Class_Predictor_Betas$HR.L95.CI <- exp(Class_Predictor_Betas$beta-Class_Predictor_Betas$error)
+
+# Add the constant as new row
+Class_Predictor_Betas <- rbind(Class_Predictor_Betas, 
+                               list("Constant", NA, NA, NA, NA, 0, "Constant", 1, 1, 1))
+
+Class_Predictor_Betas$Weight <- Class_Predictor$Weight
+Class_Predictor_Betas$Weight <- str_remove(Class_Predictor_Betas$Weight, "S=\\(")
+Class_Predictor_Betas$Weight <- str_remove(Class_Predictor_Betas$Weight, "\\+ \\(")
+Class_Predictor_Betas$Weight <- sub("\\- \\(", "-", Class_Predictor_Betas$Weight)
+Class_Predictor_Betas$Weight <- str_remove(Class_Predictor_Betas$Weight, "\\)")
+Class_Predictor_Betas$Weight <- as.numeric(Class_Predictor_Betas$Weight)
+
+mydf <- data.frame(
+    Covariate = Class_Predictor_Betas$description,
+    #HazardRatio = signif(Class_Predictor_Betas$HR, digits = 3),
+    #HazardLower = signif(Class_Predictor_Betas$HR.L95.CI, digits = 3),
+    #HazardUpper = signif(Class_Predictor_Betas$HR.U95.CI, digits = 3),
+#    Pvalue = signif(Class_Predictor_Betas$p.value, digits = 2),
+    Pvalue = sapply(Class_Predictor_Betas$p.value, JNCI_pvals),
+    Rank = Class_Predictor_Betas$rank,
+    Weight = round(Class_Predictor_Betas$Weight, digits = 5),
+    stringsAsFactors=FALSE
+)
+
+mydf <- mydf[order(mydf$Rank),]
+
+#plotHRTable(mydf, useClass = F, useWeight = T, useRank = T, xmin = -4, xmax = 5,
+#            cex = 1.0, rowspacing = 0.5, col = 1,
+#            hrTicks = c(0.5, 1, 2),
+#            classpos = -0.8, hrpos = 1.6, pvaluepos = 3.4,
+#            weightpos = 4.47, rankpos = -0.7)
+
+# Put blank entries for the constant
+mydf$Pvalue[8] = ""
+mydf$Rank[8] = ""
+
+# Reorder cols
+mydf <- subset(mydf, select = c(Covariate, Rank, Pvalue, Weight))
+
+kable(mydf, row.names=F, col.names = c("Covariate", "Rank", "p-value", "Weight"), booktabs = T) %>%
+  kable_styling(latex_options = "striped")
+
+```
+
+
+
+#Calculate Risk Score
+
+```{r}
+patient_data$Class_Pred_Score <- calculateRiskScore(Class_Predictor, encoded_data)
+```
+
+#ROC
+
+ROC curve for the 398 training data, these are the ones that we have ground truth FRET OS Class for. 
+
+```{r, fig.height=4, fig.width=4}
+library(pROC)
+
+pROC_obj <- roc(patient_data$Class.FRET.OS, patient_data$Class_Pred_Score,
+            smoothed = TRUE,
+            # arguments for ci
+            ci=FALSE, ci.alpha=0.9, stratified=FALSE,
+            # arguments for plot
+            plot=TRUE, auc.polygon=TRUE, max.auc.polygon=TRUE, grid=TRUE,
+            print.auc=TRUE, print.thres=TRUE)
+
+```
+
+##Choose an optimal threshold
+
+```{r}
+optimal <- coords(pROC_obj, x="best", input="threshold", best.method="youden")
+optimal
+threshold = optimal[1]
+```
+
+#Classify all patients
+
+```{r}
+patient_data$Pred.Class <- ifelse(patient_data$Class_Pred_Score>threshold, 2, 1)
+```
+
+##Confusion table for the 398
+
+```{r}
+
+GT <- patient_data$Class.FRET.OS
+Pred <- patient_data$Pred.Class
+
+table(GT, Pred)
+```
+
+#Analyse 398 training set
+
+```{r}
+data <- patient_data[patient_data$FRET.cohort==1,]
+```
+
+```{r}
+library(survival)
+
+data$SurvObj.pfs <- with(data, Surv(pfstime, pfsevent))
+data$SurvObj.os <- with(data, Surv(ostime, osevent))
+col=c("red", "red", "blue", "blue") 
+lty=c(1,2,1,2)
+
+km <- survfit(SurvObj.os ~ Pred.Class + TRT, data=data)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n", cex=0.8)
+print(km)
+
+survdiff(SurvObj.os ~ Pred.Class, data=data)
+survdiff(SurvObj.os[Pred.Class==1] ~ TRT[Pred.Class==1], data=data)
+survdiff(SurvObj.os[Pred.Class==2] ~ TRT[Pred.Class==2], data=data)
+```
+
+```{r, fig.height=1.8, fig.width=10}
+ggrisktable(km, data=data) + theme_cleantable()
+```
+
+```{r}
+#Split FRET by Tertiles
+breaks <- quantile(data$FRET, probs = c(0.0, 0.67, 1.0), na.rm = T)
+data$FRETeff <- cut(data$FRET, breaks = breaks, labels = c("low", "high"), 
+                    include.lowest = T)
+data$FRET_raw <- data$FRET
+data$FRET <- data$FRETeff
+
+km <- survfit(SurvObj.os ~ Pred.Class + FRET, data=data)
+plot(km, col=col, lty=lty, xlab="Overall Survival (days)", ylab="Probability of Survival")
+legend("topright", col=col, legend = names(km$strata), lty=lty, bty="n", cex=0.8)
+print(km)
+
+survdiff(SurvObj.os ~ Pred.Class, data=data)
+
+survdiff(SurvObj.os[Pred.Class==1] ~ FRET[Pred.Class==1], data=data)
+survdiff(SurvObj.os[Pred.Class==2] ~ FRET[Pred.Class==2], data=data)
+
+```
+
+```{r, fig.height=1.8, fig.width=10}
+ggrisktable(km, data=data) + theme_cleantable()
+```
+
+
+
+#Analyse COIN III 152 validation set
+
+```{r}
+data <- patient_data[patient_data$FRET.cohort==2,]
+```
+
+```{r}
+library(survival)
+
+data$SurvObj.pfs <- with(data, Surv(pfstime, pfsevent))
+data$SurvObj.os <- with(data, Surv(ostime, osevent))
+col=c("red", "red", "blue", "blue") 
+lty=c(1,2,1,2)
+
+km <- survfit(SurvObj.os ~ Pred.Class + TRT, data=data)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n", cex=0.8)
+print(km)
+```
+
+```{r, fig.height=1.8, fig.width=10}
+ggrisktable(km, data=data) + theme_cleantable()
+```
+
+```{r}
+col=c("red", "blue") 
+lty=c(1,2)
+km <- survfit(SurvObj.os ~ Pred.Class, data=data)
+plot(km, col=col, xlab="Overall Survival (days)", ylab="Probability of Survival", lty = lty)
+legend("topright", col=col, legend = names(km$strata), lty = lty, bty="n", cex=0.8)
+print(km)
+
+survdiff(SurvObj.os ~ Pred.Class, data=data)
+survdiff(SurvObj.os[Pred.Class==1] ~ TRT[Pred.Class==1], data=data)
+survdiff(SurvObj.os[Pred.Class==2] ~ TRT[Pred.Class==2], data=data)
+
+```
+
+```{r, fig.height=1.8, fig.width=10}
+ggrisktable(km, data=data) + theme_cleantable()
+```
+
+
+##KM for raw FRET split by class
+
+In Fig 4, FRET was split by tertiles of the original 398 patients. Use these same splits.
+
+```{r}
+col=c("red", "red", "blue", "blue") 
+lty=c(1,2,1,2)
+
+#Split FRET by Tertiles, or comment ot use same breaks as the 398
+breaks <- quantile(data$FRET, probs = c(0.0, 0.67, 1.0), na.rm = T)
+data$FRETeff <- cut(data$FRET, breaks = breaks, labels = c("low", "high"), 
+                    include.lowest = T)
+data$FRET_raw <- data$FRET
+data$FRET <- data$FRETeff
+
+km <- survfit(SurvObj.os ~ Pred.Class + FRET, data=data)
+plot(km, col=col, lty=lty, xlab="Overall Survival (days)", ylab="Probability of Survival")
+legend("topright", col=col, legend = names(km$strata), lty=lty, bty="n", cex=0.8)
+print(km)
+
+survdiff(SurvObj.os ~ Pred.Class, data=data)
+
+survdiff(SurvObj.os[Pred.Class==1] ~ FRET[Pred.Class==1], data=data)
+survdiff(SurvObj.os[Pred.Class==2] ~ FRET[Pred.Class==2], data=data)
+
+```
+
+```{r, fig.height=1.8, fig.width=10}
+ggrisktable(km, data=data) + theme_cleantable()
+```
+
+
+#Session Information
+
+```{r}
+sessionInfo()
+```
